@@ -5,7 +5,8 @@ CREDENTIALS_FILE = '.creds'
 GITHUBURL = "https://api.github.com"
 TO_USER = 'atiti'
 TO_PROJECT = 'testproject'
-
+CHECKPOINT_FILE = '.chkpoint'
+DEBUG = 1
 
 from getpass import getuser, getpass
 import github3
@@ -28,9 +29,25 @@ user_map = { "dmz" : "dmzimmerman",
 
 ### END OF CONFIG ###
 
+# Checkpointing functions to be able to resume
+def checkpoint_load():
+	global CHECKPOINT_FILE
+	try:
+		fh = open(CHECKPOINT_FILE, "r")
+		buff = fh.read().strip()
+		fh.close()
+		return int(buff)
+	except:
+		return 0
+
+def checkpoint_save(tcnt):
+	global CHECKPOINT_FILE
+	fh = open(CHECKPOINT_FILE, "w")
+	fh.write(str(tcnt))
+	fh.close()
+
 # Map trac usernames to github
 def map_users(inp):
-	return None
 	if user_map.has_key(inp):
 		return user_map[inp]
 	else:
@@ -125,41 +142,48 @@ class GitHubWrapper:
         	print "We are in!"
 
 	def getRepo(self, user, repo):
+		if DEBUG: print "Getting repo "+user+"/"+repo
 		return self.gh.repository(user, repo)
 
 	def getMilestoneOrCreate(self, repo, title):
+		if DEBUG: print "Creating milestone for "+repo.name+": "+title
 		if not self.milestones:
 			self.milestones = [m.refresh(True) for m in repo.iter_milestones()]
 		print title, repr(self.milestones)
 		for ms in self.milestones:
 			if ms.title == title:
 				return ms
-		print "hmm no ms"
+		if DEBUG: print "Not cached. Creating."
 		ms = repo.create_milestone(title)
 		self.milestones.append(ms)
 		return ms
 
 	def getLabelOrCreate(self, repo, label):
+		if DEBUG: print "Creating label for "+repo.name+": "+label
 		if not self.labels:
 			self.labels = [l.refresh(True) for l in repo.iter_labels()]
 		for l in self.labels:
 			if l.name == label:
 				return l
+		if DEBUG: print "Not cached. Creating."
 		l = repo.create_label(label, self.random_color())
 		self.labels.append(l)
 		return l
 	
 	def getIssueOrCreate(self, repo, title, body=None, assignee=None, milestone=None, labels=None):
+		if DEBUG: print "Creating issue for "+repo.name+": "+title
 		if not self.issues:
 			self.issues = [i.refresh(True) for i in repo.iter_issues()]
 		for i in self.issues:
 			if i.title == title:
-				return i	
+				return i
+		if DEBUG: print "Not cached. Creating."
 		i = repo.create_issue(title=title, body=body, assignee=assignee, milestone=milestone, labels=labels)
 		self.issues.append(i)
 		return i
 	
 	def getCommentOrCreate(self, issue, body):
+		if DEBUG: print "Creating comment for issue '"+issue.title+"'"
 		if not self.comments_issues.has_key(issue.title):
 			self.comments_issues[issue.title] = [c.refresh(True) for c in issue.iter_comments()]
 
@@ -167,6 +191,7 @@ class GitHubWrapper:
 		for c in coms:
 			if c.body == body:
 				return c
+		if DEBUG: print "Not cached. Creating."
 		c = issue.create_comment(body)
 		self.comments_issues[issue.title].append(c);
 		return c
@@ -216,7 +241,11 @@ if __name__ == "__main__":
 	# Get the destination repo
 	repo = g.getRepo(TO_USER, TO_PROJECT)
 
-	for ti in tickets:
+	# Load the previous checkpoint
+	tcnt = checkpoint_load()
+
+	while tcnt < len(tickets):
+		ti = tickets[tcnt]
 		print "Rate left: "+str(g.gh.ratelimit_remaining)
 		print repr(ti)
 		# Preparing milestones and labels for use to create the issue
@@ -258,5 +287,8 @@ if __name__ == "__main__":
 				date = time.ctime(long(c['time'])/1000000)
 				comment = '**From:** '+author+' **Date:** '+date+'\n\n'+c["comment"]
 				g.getCommentOrCreate(issue, comment)				
-
+		
+		# Save the current execution checkpoint
+		checkpoint_save(tcnt)
+		tcnt += 1
 		
