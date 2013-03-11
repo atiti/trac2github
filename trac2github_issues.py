@@ -3,23 +3,38 @@
 DBFILE = 'mobius.db'
 CREDENTIALS_FILE = '.creds'
 GITHUBURL = "https://api.github.com"
+TO_USER = 'atiti'
+TO_PROJECT = 'testproject'
+
 
 from getpass import getuser, getpass
 import github3
-import sqlite3, sys, string
+import sqlite3, sys, string, time
 import requests, json
 from random import randint, uniform
 
 user_map = { "dmz" : "dmzimmerman",
 	     "nobody" : None,
-	     "" : None }
+	     "Eva" : "EvkaD",
+	     "Eva_,_Fintan" : "EvkaD",
+	     "Eva,_Fintan" : "EvkaD",
+	     "None" : None,
+	     "dcochran" : "dcochran",
+	     "kiniry" : "kiniry",
+	     "rgrig" : "rgrig",
+	     "evka" : "EvkaD",
+	     "jcharles" : "kiniry",
+	     "fintan" : "fintanf" }
+
+### END OF CONFIG ###
 
 # Map trac usernames to github
 def map_users(inp):
+	return None
 	if user_map.has_key(inp):
 		return user_map[inp]
 	else:
-		return inp
+		return None
 
 # Handle the trac database
 class Trac:
@@ -29,11 +44,11 @@ class Trac:
 	def getTickets(self):
 		cursor = self.db.cursor()
 		where = ""
-		sql = "select id, summary, description, milestone, component, reporter, owner from ticket %s order by id" % where
+		sql = "select id, type, summary, description, milestone, component, reporter, owner from ticket %s order by id" % where
 		cursor.execute(sql)
 		# Fetch all the tickets
 		tickets = []
-		for id, summary, description, milestone, component, reporter, owner in cursor:
+		for id, type, summary, description, milestone, component, reporter, owner in cursor:
 			if not id:
 				continue
 #			print id, "|", milestone, "|", component, "|", reporter, "|", owner, "|",summary
@@ -50,6 +65,7 @@ class Trac:
 			ticket = {
 				'id': id,
 				'summary': summary,
+				'type' : type,
 				'description': description,
 				'milestone': milestone,
 				'component': component,
@@ -76,8 +92,10 @@ class Trac:
 
 class GitHubWrapper:
 	gh = None
-	labels = []
-	milestones = []
+	labels = None
+	milestones = None
+	issues = None
+	comments_issues = {}
 	def __init__(self):
 		token = id = ''
 		try:
@@ -110,37 +128,47 @@ class GitHubWrapper:
 		return self.gh.repository(user, repo)
 
 	def getMilestoneOrCreate(self, repo, title):
-		self.milestones = [m.refresh() for m in repo.iter_milestones()]
+		if not self.milestones:
+			self.milestones = [m.refresh(True) for m in repo.iter_milestones()]
 		print title, repr(self.milestones)
 		for ms in self.milestones:
 			if ms.title == title:
 				return ms
 		print "hmm no ms"
 		ms = repo.create_milestone(title)
+		self.milestones.append(ms)
 		return ms
 
 	def getLabelOrCreate(self, repo, label):
-		self.labels = [l.refresh() for l in repo.iter_labels()]
+		if not self.labels:
+			self.labels = [l.refresh(True) for l in repo.iter_labels()]
 		for l in self.labels:
 			if l.name == label:
 				return l
 		l = repo.create_label(label, self.random_color())
+		self.labels.append(l)
 		return l
 	
 	def getIssueOrCreate(self, repo, title, body=None, assignee=None, milestone=None, labels=None):
-		issues = [i.refresh() for i in repo.iter_issues()]
-		for i in issues:
+		if not self.issues:
+			self.issues = [i.refresh(True) for i in repo.iter_issues()]
+		for i in self.issues:
 			if i.title == title:
 				return i	
 		i = repo.create_issue(title=title, body=body, assignee=assignee, milestone=milestone, labels=labels)
+		self.issues.append(i)
 		return i
 	
 	def getCommentOrCreate(self, issue, body):
-		comments = [c.refresh() for c in issue.iter_comments()]
-		for c in comments:
+		if not self.comments_issues.has_key(issue.title):
+			self.comments_issues[issue.title] = [c.refresh(True) for c in issue.iter_comments()]
+
+		coms = self.comments_issues[issue.title]
+		for c in coms:
 			if c.body == body:
 				return c
 		c = issue.create_comment(body)
+		self.comments_issues[issue.title].append(c);
 		return c
 
 	def hsv_to_rgb(self, h, s, v):
@@ -186,34 +214,49 @@ if __name__ == "__main__":
 	g = GitHubWrapper()
 	
 	# Get the destination repo
-	repo = g.getRepo('atiti', 'testproject')
+	repo = g.getRepo(TO_USER, TO_PROJECT)
 
 	for ti in tickets:
+		print "Rate left: "+str(g.gh.ratelimit_remaining)
+		print repr(ti)
 		# Preparing milestones and labels for use to create the issue
 		milestone = ti["milestone"]
-		if len(milestone) > 0:
+		if milestone and len(milestone) > 0:
 			ms = g.getMilestoneOrCreate(repo, milestone)
 			msnum = ms.number
 		else:
 			msnum = None
 
 		component = ti["component"]
-		if len(component) > 0:
+		if component and len(component) > 0:
 			cp = g.getLabelOrCreate(repo, component)
 			component = [component]
 		else:
 			component = None			
-		
+	
+		type = ti["type"]
+		if len(type) > 0:
+			tp = g.getLabelOrCreate(repo, type)
+			if component: component.append(type)
+			else:
+				component = [type]
+
+	
 		# Map trac to github users
 		assignee = map_users(ti["owner"])
 
 		# Create a new issue
 		# TODO: the assignee needs to be set once the trac -> github user mapping is known
-		issue = g.getIssueOrCreate(repo, ti["summary"], ti["description"], None, msnum, component)
+		issue = g.getIssueOrCreate(repo, ti["summary"], ti["description"], assignee, msnum, component)
 
 		# Add all the comments!
 		for c in ti["history"]:
 			if len(c["comment"]) > 0:
-				g.getCommentOrCreate(issue, c["comment"])				
+				if c['author'] and len(c['author']) == 0:
+					c['author'] = 'None'
+				author = str(c['author'])+" (GH: "+str(map_users(c['author']))+")"
+				date = time.ctime(long(c['time'])/1000000)
+				comment = '**From:** '+author+' **Date:** '+date+'\n\n'+c["comment"]
+				g.getCommentOrCreate(issue, comment)				
 
 		
